@@ -1,7 +1,7 @@
 """
 ============================================================
 SMART HOME HUB - TELEGRAM BOT
-Versión 4.0 - Con autenticación de usuarios
+Versión 5.0 - Con autenticación + lenguaje natural
 ============================================================
 """
 
@@ -29,6 +29,7 @@ from auth import (
     authorized_only,
     AUTH_PASSWORD,
 )
+from nlp import parse_natural_command, get_command_examples
 
 # ============================================================
 # CONFIGURACIÓN
@@ -59,6 +60,17 @@ STATE_INFO = {
     "PARTY":   {"emoji": "🎉", "name": "Fiesta"},
     "STANDBY": {"emoji": "⏹", "name": "Standby"},
     "OFF":     {"emoji": "⭕", "name": "Apagado"},
+}
+
+# Mapeo de comandos NLP a info de visualización
+COMMAND_INFO = {
+    "N": {"emoji": "🌙", "name": "Nocturno"},
+    "D": {"emoji": "☀️", "name": "Día"},
+    "R": {"emoji": "😌", "name": "Relax"},
+    "A": {"emoji": "🚨", "name": "Alarma"},
+    "P": {"emoji": "🎉", "name": "Fiesta"},
+    "S": {"emoji": "⏹", "name": "Standby"},
+    "T": {"emoji": "🌡", "name": "Temperatura"},
 }
 
 
@@ -124,6 +136,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"🏠 Bienvenido al *Smart Home Hub*\n"
             f"✅ Estás autorizado para controlar el sistema.\n\n"
             f"📡 MQTT: {'🟢 Conectado' if mqtt_client.connected else '🔴 Desconectado'}\n\n"
+            f"💬 Puedes usar comandos slash (/help) o\n"
+            f"   escribir frases naturales como \"prende la luz\".\n\n"
             f"Escribe /help para ver los comandos."
         )
     else:
@@ -204,10 +218,24 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "🌡 /temp - Consultar temperatura\n"
         "ℹ️ /status - Estado del sistema\n"
         "🆔 /myid - Ver tu ID\n\n"
+        "*💬 Lenguaje natural:*\n"
+        "También puedes escribir frases como:\n"
+        "_\"prende la luz\"_, _\"modo nocturno\"_,\n"
+        "_\"hacer una fiesta\"_, _\"qué temperatura\"_\n\n"
         "*❓ Ayuda:*\n"
-        "/help - Mostrar esta ayuda"
+        "/help - Mostrar esta ayuda\n"
+        "/examples - Ver ejemplos de lenguaje natural"
     )
     await update.message.reply_text(help_msg, parse_mode="Markdown")
+
+
+@authorized_only
+async def cmd_examples(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Muestra ejemplos de comandos naturales"""
+    await update.message.reply_text(
+        get_command_examples(),
+        parse_mode="Markdown"
+    )
 
 
 async def send_mqtt_command(update: Update, command: str, mode_name: str, emoji: str):
@@ -290,9 +318,19 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text(status_msg, parse_mode="Markdown")
 
 
-async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+# ============================================================
+# HANDLER DE LENGUAJE NATURAL
+# ============================================================
+
+async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Maneja mensajes de texto natural (no comandos).
+    Intenta interpretar la intención del usuario usando NLP.
+    """
     user_id = update.effective_user.id
+    user_text = update.message.text
     
+    # 1. Verificar autenticación
     if not is_authorized(user_id):
         await update.message.reply_text(
             "🚫 No estás autorizado.\nSi tienes el password: `/auth <password>`",
@@ -300,9 +338,55 @@ async def handle_unknown(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         )
         return
     
-    await update.message.reply_text(
-        "🤔 No entendí ese mensaje.\nEscribe /help para ver los comandos."
-    )
+    # 2. Intentar interpretar con NLP
+    command, matched_phrase = parse_natural_command(user_text)
+    
+    if command is None:
+        # No se entendió, dar ayuda
+        await update.message.reply_text(
+            f"🤔 No entendí lo que quieres decir.\n\n"
+            f"{get_command_examples()}\n\n"
+            f"O escribe /help para ver los comandos slash.",
+            parse_mode="Markdown"
+        )
+        return
+    
+    # 3. Obtener info del comando
+    info = COMMAND_INFO.get(command, {"emoji": "✅", "name": command})
+    emoji = info["emoji"]
+    mode_name = info["name"]
+    
+    # 4. Ejecutar el comando vía MQTT
+    subscribed_chat_ids.add(update.effective_chat.id)
+    
+    if not mqtt_client.connected:
+        await update.message.reply_text(
+            "⚠️ *MQTT desconectado*",
+            parse_mode="Markdown"
+        )
+        return
+    
+    success = mqtt_client.publish_command(command)
+    
+    if success:
+        if command == "T":
+            await update.message.reply_text(
+                f"💬 Entendí: _\"{matched_phrase}\"_\n"
+                f"🌡 Consultando temperatura...",
+                parse_mode="Markdown"
+            )
+        else:
+            await update.message.reply_text(
+                f"💬 Entendí: _\"{matched_phrase}\"_\n"
+                f"{emoji} Enviando comando *{mode_name}*...",
+                parse_mode="Markdown"
+            )
+        logger.info(
+            f"NLP comando '{command}' ({mode_name}) por "
+            f"{update.effective_user.username} desde texto: '{user_text}'"
+        )
+    else:
+        await update.message.reply_text("❌ Error al enviar el comando.")
 
 
 async def post_init(application: Application) -> None:
@@ -317,7 +401,7 @@ async def post_init(application: Application) -> None:
 def main() -> None:
     global bot_application
     
-    logger.info("🚀 Iniciando Smart Home Hub Bot v4.0 (con auth)...")
+    logger.info("🚀 Iniciando Smart Home Hub Bot v5.0 (con NLP)...")
 
     if get_authorized_count() == 0:
         logger.warning("⚠️ ATENCIÓN: No hay usuarios autorizados configurados!")
@@ -334,10 +418,14 @@ def main() -> None:
     mqtt_client.set_temp_callback(on_temp_received)
     mqtt_client.connect()
 
+    # ============ COMANDOS PÚBLICOS ============
     bot_application.add_handler(CommandHandler("start", cmd_start))
     bot_application.add_handler(CommandHandler("myid", cmd_myid))
     bot_application.add_handler(CommandHandler("auth", cmd_auth))
+    
+    # ============ COMANDOS PROTEGIDOS ============
     bot_application.add_handler(CommandHandler("help", cmd_help))
+    bot_application.add_handler(CommandHandler("examples", cmd_examples))
     bot_application.add_handler(CommandHandler("night", cmd_night))
     bot_application.add_handler(CommandHandler("day", cmd_day))
     bot_application.add_handler(CommandHandler("relax", cmd_relax))
@@ -346,8 +434,10 @@ def main() -> None:
     bot_application.add_handler(CommandHandler("standby", cmd_standby))
     bot_application.add_handler(CommandHandler("temp", cmd_temp))
     bot_application.add_handler(CommandHandler("status", cmd_status))
+    
+    # ============ HANDLER DE LENGUAJE NATURAL ============
     bot_application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unknown)
+        MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural_language)
     )
 
     logger.info("✅ Bot listo. Escuchando mensajes...")
