@@ -3,11 +3,11 @@
 VOICE MODULE - Smart Home Hub Bot
 ============================================================
 Transcripción de notas de voz usando faster-whisper (local).
+Optimizado para Railway con caché persistente.
 """
 
 import os
 import logging
-import tempfile
 from faster_whisper import WhisperModel
 
 logger = logging.getLogger(__name__)
@@ -16,28 +16,14 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # CONFIGURACIÓN DEL MODELO
 # ============================================================
-# Modelos disponibles (de menor a mayor):
-#   "tiny"     →  75 MB,  más rápido,  menor precisión
-#   "base"     → 142 MB,  rápido,      buena precisión
-#   "small"    → 466 MB,  medio,       muy buena precisión
-#   "medium"   → 1.5 GB,  lento,       excelente precisión
-#   "large-v3" → 3.0 GB,  muy lento,   máxima precisión
-#
-# Para nuestro caso (comandos cortos en español), "tiny" es suficiente
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")
-
-# Idioma esperado (None = auto-detectar)
-# "es" = español, "en" = inglés, None = automático
 WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es")
-
-# Dispositivo: "cpu" o "cuda" (si tienes GPU NVIDIA)
 DEVICE = "cpu"
-
-# Tipo de cómputo
-# "int8"   → más rápido, menos preciso
-# "int16"  → balance
-# "float32" → preciso, más lento
 COMPUTE_TYPE = "int8"
+
+# Directorio donde se guarda el modelo descargado
+# En Railway, /tmp es volátil pero al menos persiste durante la ejecución
+MODEL_DOWNLOAD_PATH = os.getenv("WHISPER_CACHE_DIR", None)
 
 
 # ============================================================
@@ -54,11 +40,17 @@ def _get_model():
         logger.info(f"🤖 Cargando modelo Whisper '{MODEL_SIZE}'...")
         logger.info(f"   (Primera vez tarda más por la descarga)")
         
-        _model = WhisperModel(
-            model_size_or_path=MODEL_SIZE,
-            device=DEVICE,
-            compute_type=COMPUTE_TYPE,
-        )
+        kwargs = {
+            "model_size_or_path": MODEL_SIZE,
+            "device": DEVICE,
+            "compute_type": COMPUTE_TYPE,
+        }
+        
+        if MODEL_DOWNLOAD_PATH:
+            kwargs["download_root"] = MODEL_DOWNLOAD_PATH
+            logger.info(f"   Cache: {MODEL_DOWNLOAD_PATH}")
+        
+        _model = WhisperModel(**kwargs)
         
         logger.info(f"✅ Modelo Whisper cargado: {MODEL_SIZE}")
     

@@ -6,4 +6,8 @@ __pycache__/
 .idea/
 *.log
 .DS_Store
-test_mqtt.py
+
+# Whisper models (se descargan en runtime)
+*.bin
+models/
+.whisper-cache/
