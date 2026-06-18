@@ -1,6 +1,18 @@
 {
   "$schema": "https://schema.railpack.com",
   "provider": "python",
-  "buildAptPackages": ["ffmpeg"],
-  "deployAptPackages": ["ffmpeg"]
+  "buildAptPackages": [
+    "ffmpeg",
+    "libavformat-dev",
+    "libavcodec-dev",
+    "libavdevice-dev",
+    "libavutil-dev",
+    "libswscale-dev",
+    "libswresample-dev",
+    "libavfilter-dev",
+    "pkg-config"
+  ],
+  "deployAptPackages": [
+    "ffmpeg"
+  ]
 }
