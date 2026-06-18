@@ -3,13 +3,5 @@
   "provider": "python",
   "packages": {
     "python": "3.11"
-  },
-  "buildAptPackages": [
-    "ffmpeg",
-    "build-essential",
-    "cmake"
-  ],
-  "deployAptPackages": [
-    "ffmpeg"
-  ]
+  }
 }
