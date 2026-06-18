@@ -1,13 +1,14 @@
 """
 ============================================================
 SMART HOME HUB - TELEGRAM BOT
-Versión 5.0 - Con autenticación + lenguaje natural
+Versión 6.0 - Con autenticación + lenguaje natural + voz
 ============================================================
 """
 
 import os
 import logging
 import asyncio
+import tempfile
 from dotenv import load_dotenv
 
 # ⚠️ CARGAR .ENV ANTES DE IMPORTAR auth.py
@@ -30,6 +31,7 @@ from auth import (
     AUTH_PASSWORD,
 )
 from nlp import parse_natural_command, get_command_examples
+from voice import transcribe_audio, preload_model
 
 # ============================================================
 # CONFIGURACIÓN
@@ -122,6 +124,60 @@ async def _send_message_async(chat_id: int, message: str):
 
 
 # ============================================================
+# FUNCIÓN HELPER PARA EJECUTAR COMANDOS
+# ============================================================
+
+async def execute_command(update: Update, command: str, matched_phrase: str = None, source: str = "text"):
+    """
+    Helper unificado para ejecutar un comando MQTT.
+    
+    Args:
+        update: Update de Telegram
+        command: Carácter del comando (N, D, R, A, P, S, T)
+        matched_phrase: Frase que se interpretó (opcional, para NLP/voz)
+        source: "text", "natural", "voice", "command"
+    """
+    subscribed_chat_ids.add(update.effective_chat.id)
+    
+    info = COMMAND_INFO.get(command, {"emoji": "✅", "name": command})
+    emoji = info["emoji"]
+    mode_name = info["name"]
+    
+    if not mqtt_client.connected:
+        await update.message.reply_text(
+            "⚠️ *MQTT desconectado*",
+            parse_mode="Markdown"
+        )
+        return
+    
+    success = mqtt_client.publish_command(command)
+    
+    if not success:
+        await update.message.reply_text("❌ Error al enviar el comando.")
+        return
+    
+    # Construir mensaje según fuente
+    if source == "voice":
+        prefix = f"🎤 _Escuché:_ \"{matched_phrase}\"\n"
+    elif source == "natural":
+        prefix = f"💬 _Entendí:_ \"{matched_phrase}\"\n"
+    else:
+        prefix = ""
+    
+    if command == "T":
+        msg = f"{prefix}🌡 Consultando temperatura..."
+    else:
+        msg = f"{prefix}{emoji} Enviando comando *{mode_name}*..."
+    
+    await update.message.reply_text(msg, parse_mode="Markdown")
+    
+    user = update.effective_user
+    logger.info(
+        f"[{source.upper()}] Comando '{command}' ({mode_name}) por {user.username}"
+    )
+
+
+# ============================================================
 # COMANDOS PÚBLICOS
 # ============================================================
 
@@ -136,8 +192,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"🏠 Bienvenido al *Smart Home Hub*\n"
             f"✅ Estás autorizado para controlar el sistema.\n\n"
             f"📡 MQTT: {'🟢 Conectado' if mqtt_client.connected else '🔴 Desconectado'}\n\n"
-            f"💬 Puedes usar comandos slash (/help) o\n"
-            f"   escribir frases naturales como \"prende la luz\".\n\n"
+            f"💬 Puedes usar:\n"
+            f"   - Comandos slash (/help)\n"
+            f"   - Frases naturales (\"prende la luz\")\n"
+            f"   - Notas de voz 🎤\n\n"
             f"Escribe /help para ver los comandos."
         )
     else:
@@ -219,9 +277,10 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "ℹ️ /status - Estado del sistema\n"
         "🆔 /myid - Ver tu ID\n\n"
         "*💬 Lenguaje natural:*\n"
-        "También puedes escribir frases como:\n"
-        "_\"prende la luz\"_, _\"modo nocturno\"_,\n"
+        "Escribe frases como _\"prende la luz\"_, _\"modo nocturno\"_,\n"
         "_\"hacer una fiesta\"_, _\"qué temperatura\"_\n\n"
+        "*🎤 Notas de voz:*\n"
+        "También puedes enviar audios y los transcribiré!\n\n"
         "*❓ Ayuda:*\n"
         "/help - Mostrar esta ayuda\n"
         "/examples - Ver ejemplos de lenguaje natural"
@@ -238,70 +297,39 @@ async def cmd_examples(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
-async def send_mqtt_command(update: Update, command: str, mode_name: str, emoji: str):
-    subscribed_chat_ids.add(update.effective_chat.id)
-    
-    if not mqtt_client.connected:
-        await update.message.reply_text(
-            "⚠️ *MQTT desconectado*",
-            parse_mode="Markdown"
-        )
-        return
-
-    success = mqtt_client.publish_command(command)
-    if success:
-        await update.message.reply_text(
-            f"{emoji} Enviando comando *{mode_name}*...",
-            parse_mode="Markdown"
-        )
-        logger.info(f"Comando {command} por {update.effective_user.username}")
-    else:
-        await update.message.reply_text("❌ Error al enviar el comando.")
-
-
 @authorized_only
 async def cmd_night(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_mqtt_command(update, "N", "Nocturno", "🌙")
+    await execute_command(update, "N", source="command")
 
 
 @authorized_only
 async def cmd_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_mqtt_command(update, "D", "Día", "☀️")
+    await execute_command(update, "D", source="command")
 
 
 @authorized_only
 async def cmd_relax(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_mqtt_command(update, "R", "Relax", "😌")
+    await execute_command(update, "R", source="command")
 
 
 @authorized_only
 async def cmd_alarm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_mqtt_command(update, "A", "Alarma", "🚨")
+    await execute_command(update, "A", source="command")
 
 
 @authorized_only
 async def cmd_party(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_mqtt_command(update, "P", "Fiesta", "🎉")
+    await execute_command(update, "P", source="command")
 
 
 @authorized_only
 async def cmd_standby(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await send_mqtt_command(update, "S", "Standby", "⏹")
+    await execute_command(update, "S", source="command")
 
 
 @authorized_only
 async def cmd_temp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    subscribed_chat_ids.add(update.effective_chat.id)
-    
-    if not mqtt_client.connected:
-        await update.message.reply_text("⚠️ MQTT desconectado")
-        return
-    
-    success = mqtt_client.publish_command("T")
-    if success:
-        await update.message.reply_text("🌡 Consultando temperatura...")
-    else:
-        await update.message.reply_text("❌ Error al solicitar la temperatura")
+    await execute_command(update, "T", source="command")
 
 
 @authorized_only
@@ -351,42 +379,102 @@ async def handle_natural_language(update: Update, context: ContextTypes.DEFAULT_
         )
         return
     
-    # 3. Obtener info del comando
-    info = COMMAND_INFO.get(command, {"emoji": "✅", "name": command})
-    emoji = info["emoji"]
-    mode_name = info["name"]
+    # 3. Ejecutar comando
+    await execute_command(update, command, matched_phrase, source="natural")
+
+
+# ============================================================
+# HANDLER DE NOTAS DE VOZ
+# ============================================================
+
+async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Maneja notas de voz: las transcribe y ejecuta el comando.
+    """
+    user_id = update.effective_user.id
+    user = update.effective_user
     
-    # 4. Ejecutar el comando vía MQTT
-    subscribed_chat_ids.add(update.effective_chat.id)
-    
-    if not mqtt_client.connected:
+    # 1. Verificar autenticación
+    if not is_authorized(user_id):
         await update.message.reply_text(
-            "⚠️ *MQTT desconectado*",
+            "🚫 No estás autorizado.\nSi tienes el password: `/auth <password>`",
             parse_mode="Markdown"
         )
         return
     
-    success = mqtt_client.publish_command(command)
+    # 2. Avisar que estamos procesando
+    processing_msg = await update.message.reply_text(
+        "🎤 _Transcribiendo nota de voz..._",
+        parse_mode="Markdown"
+    )
     
-    if success:
-        if command == "T":
-            await update.message.reply_text(
-                f"💬 Entendí: _\"{matched_phrase}\"_\n"
-                f"🌡 Consultando temperatura...",
-                parse_mode="Markdown"
+    audio_path = None
+    
+    try:
+        # 3. Descargar el audio
+        voice = update.message.voice
+        
+        if voice is None:
+            await processing_msg.edit_text("❌ No se detectó audio en el mensaje.")
+            return
+        
+        file = await context.bot.get_file(voice.file_id)
+        
+        # Crear archivo temporal
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as temp_file:
+            audio_path = temp_file.name
+        
+        # Descargar
+        await file.download_to_drive(audio_path)
+        logger.info(f"🎤 Audio descargado de {user.username}: {audio_path}")
+        
+        # 4. Transcribir
+        transcription = transcribe_audio(audio_path)
+        
+        if not transcription:
+            await processing_msg.edit_text(
+                "❌ No pude transcribir el audio. ¿Puedes intentar de nuevo?"
             )
-        else:
-            await update.message.reply_text(
-                f"💬 Entendí: _\"{matched_phrase}\"_\n"
-                f"{emoji} Enviando comando *{mode_name}*...",
-                parse_mode="Markdown"
-            )
-        logger.info(
-            f"NLP comando '{command}' ({mode_name}) por "
-            f"{update.effective_user.username} desde texto: '{user_text}'"
+            return
+        
+        # 5. Mostrar la transcripción
+        await processing_msg.edit_text(
+            f"🎤 _Escuché:_ \"{transcription}\"\n"
+            f"⏳ _Procesando..._",
+            parse_mode="Markdown"
         )
-    else:
-        await update.message.reply_text("❌ Error al enviar el comando.")
+        
+        # 6. Procesar con NLP
+        command, matched_phrase = parse_natural_command(transcription)
+        
+        if command is None:
+            await update.message.reply_text(
+                f"🤔 No entendí lo que dijiste.\n\n"
+                f"Dijiste: _\"{transcription}\"_\n\n"
+                f"{get_command_examples()}",
+                parse_mode="Markdown"
+            )
+            return
+        
+        # 7. Ejecutar comando (usando la transcripción completa como contexto)
+        await execute_command(update, command, transcription, source="voice")
+        
+    except Exception as e:
+        logger.error(f"❌ Error procesando voz: {e}")
+        try:
+            await processing_msg.edit_text(
+                f"❌ Error procesando el audio: {str(e)}"
+            )
+        except Exception:
+            pass
+    
+    finally:
+        # 8. Limpiar archivo temporal
+        if audio_path and os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
+            except Exception as e:
+                logger.warning(f"⚠️ No se pudo eliminar temp file: {e}")
 
 
 async def post_init(application: Application) -> None:
@@ -401,11 +489,16 @@ async def post_init(application: Application) -> None:
 def main() -> None:
     global bot_application
     
-    logger.info("🚀 Iniciando Smart Home Hub Bot v5.0 (con NLP)...")
+    logger.info("🚀 Iniciando Smart Home Hub Bot v6.0 (con NLP + Voz)...")
 
     if get_authorized_count() == 0:
         logger.warning("⚠️ ATENCIÓN: No hay usuarios autorizados configurados!")
         logger.warning("⚠️ Configura AUTHORIZED_USERS en el .env")
+
+    # Pre-cargar modelo Whisper (descarga ~75 MB la primera vez)
+    logger.info("🤖 Pre-cargando modelo Whisper...")
+    if not preload_model():
+        logger.warning("⚠️ No se pudo pre-cargar Whisper. Las notas de voz pueden fallar.")
 
     bot_application = (
         Application.builder()
@@ -435,9 +528,14 @@ def main() -> None:
     bot_application.add_handler(CommandHandler("temp", cmd_temp))
     bot_application.add_handler(CommandHandler("status", cmd_status))
     
-    # ============ HANDLER DE LENGUAJE NATURAL ============
+    # ============ HANDLER DE LENGUAJE NATURAL (texto) ============
     bot_application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, handle_natural_language)
+    )
+    
+    # ============ HANDLER DE NOTAS DE VOZ ============
+    bot_application.add_handler(
+        MessageHandler(filters.VOICE, handle_voice_message)
     )
 
     logger.info("✅ Bot listo. Escuchando mensajes...")
