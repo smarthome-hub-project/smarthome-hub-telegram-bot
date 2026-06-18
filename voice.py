@@ -2,13 +2,14 @@
 ============================================================
 VOICE MODULE - Smart Home Hub Bot
 ============================================================
-Transcripción de notas de voz usando faster-whisper (local).
-Optimizado para Railway con caché persistente.
+Transcripción de notas de voz usando openai-whisper (sin PyAV).
+Más compatible con Railway que faster-whisper.
+============================================================
 """
 
 import os
 import logging
-from faster_whisper import WhisperModel
+import whisper
 
 logger = logging.getLogger(__name__)
 
@@ -16,14 +17,16 @@ logger = logging.getLogger(__name__)
 # ============================================================
 # CONFIGURACIÓN DEL MODELO
 # ============================================================
+# Modelos disponibles:
+#   "tiny"     →  75 MB,  más rápido,  menor precisión
+#   "base"     → 142 MB,  rápido,      buena precisión
+#   "small"    → 466 MB,  medio,       muy buena precisión
+#   "medium"   → 1.5 GB,  lento,       excelente precisión
+#   "large"    → 3.0 GB,  muy lento,   máxima precisión
 MODEL_SIZE = os.getenv("WHISPER_MODEL", "tiny")
-WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es")
-DEVICE = "cpu"
-COMPUTE_TYPE = "int8"
 
-# Directorio donde se guarda el modelo descargado
-# En Railway, /tmp es volátil pero al menos persiste durante la ejecución
-MODEL_DOWNLOAD_PATH = os.getenv("WHISPER_CACHE_DIR", None)
+# Idioma esperado
+WHISPER_LANGUAGE = os.getenv("WHISPER_LANGUAGE", "es")
 
 
 # ============================================================
@@ -40,17 +43,7 @@ def _get_model():
         logger.info(f"🤖 Cargando modelo Whisper '{MODEL_SIZE}'...")
         logger.info(f"   (Primera vez tarda más por la descarga)")
         
-        kwargs = {
-            "model_size_or_path": MODEL_SIZE,
-            "device": DEVICE,
-            "compute_type": COMPUTE_TYPE,
-        }
-        
-        if MODEL_DOWNLOAD_PATH:
-            kwargs["download_root"] = MODEL_DOWNLOAD_PATH
-            logger.info(f"   Cache: {MODEL_DOWNLOAD_PATH}")
-        
-        _model = WhisperModel(**kwargs)
+        _model = whisper.load_model(MODEL_SIZE)
         
         logger.info(f"✅ Modelo Whisper cargado: {MODEL_SIZE}")
     
@@ -81,17 +74,15 @@ def transcribe_audio(audio_path: str) -> str:
         model = _get_model()
         
         # Transcribir
-        segments, info = model.transcribe(
+        result = model.transcribe(
             audio_path,
             language=WHISPER_LANGUAGE,
-            beam_size=5,
+            fp16=False,  # Desactivar half-precision (CPU no lo soporta bien)
         )
         
-        # Concatenar todos los segmentos
-        transcription = " ".join(segment.text for segment in segments).strip()
+        transcription = result["text"].strip()
         
         logger.info(f"✅ Transcripción: '{transcription}'")
-        logger.debug(f"   Idioma detectado: {info.language} ({info.language_probability:.2f})")
         
         return transcription
         
